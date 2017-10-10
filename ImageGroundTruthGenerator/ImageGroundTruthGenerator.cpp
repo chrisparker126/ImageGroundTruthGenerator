@@ -12,7 +12,7 @@
 #include "opencv2/highgui/highgui.hpp"
 #include "opencv2/imgproc/imgproc.hpp"
 #include "opencv2/core/core.hpp"
-#include <boost/property_tree/ptree.hpp>
+#include <boost/filesystem.hpp>
 
 
 
@@ -26,27 +26,31 @@ bool isStrideSizeValidForDimension(size_t strideSize, size_t windowSize, size_t 
 	return (imageSize - windowSize) % strideSize == 0;
 }
 
-#define IMAGE_FILE R"(C:\Users\crisyp\Documents\machine_learning\tennis_training_data\frame_150.PNG)"
-
 using namespace cv;
 using namespace std;
 using namespace boost::program_options;
+namespace fs = boost::filesystem;
 
 int main(int argc, const char *argv[])
 {
-	size_t x_stride = 40, y_stride = 60, window_size_x = 80, window_size_y = 120;
-	std::string file = IMAGE_FILE;
+	size_t x_stride, y_stride, window_size_x, window_size_y,
+		target_res_x = 0, target_res_y = 0;
+	double resize_factor_x = 1.0, resize_factor_y = 1.0;
+	std::string fileName , outputFile;
+	fs::path inputFilePath;
 	try
 	{
 		options_description desc{ "Options" };
 		desc.add_options()
 			("help,h", "Help screen")
-			("image", value<string>(), "input image file path")
+			("image", value<string>()->required(), "input image file path")
 			("annotation", value<string>(), "out annotation file path")
-			("stride-x", value<size_t>(), "stride in X dimension")
-			("stride-y", value<size_t>(), "stride in Y dimension")
-			("window-x", value<size_t>(), "sliding window size in X dimension")
-			("window-y", value<size_t>(), "sliding window size in Y dimension");
+			("stride-x", value<size_t>()->required(), "stride in X dimension")
+			("stride-y", value<size_t>()->required(), "stride in Y dimension")
+			("window-x", value<size_t>()->required(), "sliding window size in X dimension")
+			("window-y", value<size_t>()->required(), "sliding window size in Y dimension")
+			("target-res-x", value<size_t>(), "target resolution in x")
+			("target-res-y", value<size_t>(), "target resolution in y");
 
 		variables_map vm;
 		store(parse_command_line(argc, argv, desc), vm);
@@ -54,26 +58,67 @@ int main(int argc, const char *argv[])
 
 		if (vm.count("help"))
 			std::cout << desc << '\n';
-		else if (vm.count("age"))
-			std::cout << "Age: " << vm["age"].as<int>() << '\n';
-		else if (vm.count("pi"))
-			std::cout << "Pi: " << vm["pi"].as<float>() << '\n';
-		else if (vm.count("name"))
-			std::cout << "Name: " << vm["name"].as<std::string>() << '\n';
 
+		if (vm.count("image"))
+			fileName = vm["image"].as<std::string>();
+
+
+		if (vm.count("annotation"))
+			outputFile = vm["annotation"].as<std::string>();
+		else
+		{
+			inputFilePath = fileName;
+			auto fileNameWithoutExtension = inputFilePath.stem().string();
+			outputFile = fileNameWithoutExtension + ".annote";
+		}
+
+		if (vm.count("stride-x"))
+			x_stride = vm["stride-x"].as<size_t>();
+
+		if (vm.count("stride-y"))
+			y_stride = vm["stride-y"].as<size_t>();
+
+		if (vm.count("window-x"))
+			window_size_x = vm["window-x"].as<size_t>();
+
+		if (vm.count("window-y"))
+			window_size_y = vm["window-y"].as<size_t>();
+
+		
+		if (vm.count("target-res-x") && vm.count("target-res-y"))
+		{
+			target_res_x = vm["target-res-x"].as<size_t>();
+			target_res_y = vm["target-res-y"].as<size_t>();
+		}
 	}
 	catch (const boost::program_options::error &ex)
 	{
 		std::cerr << ex.what() << '\n';
+		return 1;
 	}
 
+	Mat image = imread(fileName, 1);
 
-	Mat image = imread(file, 1);
-
-	/// Convert it to gray
+	// Convert it to gray scale
 	cvtColor(image, image, CV_RGB2GRAY);
 
 	size_t imageSize_x = image.cols, imageSize_y = image.rows;
+
+	// determinig resize factor
+	if (target_res_x != 0)
+		resize_factor_x = imageSize_x / (double) target_res_x;
+
+	if(target_res_y != 0)
+		resize_factor_y = imageSize_y / (double) target_res_y;
+
+	cout << "resizing image by x_factor: " << resize_factor_x << " and y_factor: " << resize_factor_y << endl;
+
+	resize(image, image, Size(), 1./resize_factor_x, 1./resize_factor_y, cv::INTER_LANCZOS4);
+
+	imageSize_x = image.cols;
+	imageSize_y = image.rows;
+
+	cout << "actual target res: " << imageSize_x << " x " << imageSize_y << endl;
 
 	// check a sliding window can actually be made with the image Size 
 	if (!isWindowSizeValidForDimension(window_size_x, imageSize_x) && !isWindowSizeValidForDimension(window_size_y, imageSize_x))
@@ -92,21 +137,28 @@ int main(int argc, const char *argv[])
 	// we essentially want to iterate through each image window and display to the user whether it valid or not
 	// output in first line the dimension
 
-	size_t window_index_x_max = imageSize_x / window_size_x;
-	size_t window_index_y_max = imageSize_y / window_size_y;
-
 	size_t stride_index_x_max = (imageSize_x - window_size_x) / x_stride + 1;
 	size_t stride_index_y_max = (imageSize_y - window_size_y) / y_stride + 1;
 	namedWindow("small Image", CV_WINDOW_AUTOSIZE);
 
+	std::ofstream annotation(outputFile.c_str(), std::ios::binary);
+
+	auto srcImageFileName = outputFile + ".PNG";
+	// first file name
+	annotation << srcImageFileName << endl;
+
+	//  window x size, and window y size
+	annotation << window_size_x << "," << window_size_y << endl;
+
 	for (size_t j = 0; j < stride_index_y_max; j++) {
 		for (size_t i = 0; i < stride_index_x_max; i++) {
-
-			cv::Mat smallImage = cv::Mat(image, cv::Rect(i*x_stride, j*y_stride, 
+			auto xPos = i*x_stride, yPos = j*y_stride;
+			cv::Mat smallImage = cv::Mat(image, cv::Rect(xPos, yPos, 
 				window_size_x, window_size_y));
 			imshow("small Image", smallImage);
 			waitKey(30);
 			size_t input; 
+			
 			cin >> input;
 
 			if (input != 0 && input != 1)
@@ -115,13 +167,18 @@ int main(int argc, const char *argv[])
 				std::cout << "Press key to continue..." << endl;
 				std::string p;
 				cin >> p;
-				return;
+				return 1;
 			}
 
-			cout << "input: " << input << endl;
+			annotation << xPos << "," << yPos << "," << input << endl;
 		}
 	}
 
+	annotation.close();
+	vector<int> compression_params;
+	compression_params.push_back(IMWRITE_PNG_COMPRESSION);
+	compression_params.push_back(3);
+	imwrite(srcImageFileName, image, compression_params);
 	return 0;
 }
 
